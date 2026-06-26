@@ -74,7 +74,7 @@ def reconstruct_soil_moisture(daily: dict, field_capacity_mm: float) -> tuple[fl
         rain = float(rain or 0.0)
         et0 = float(et0 or 0.0)
 
-        if d < today:
+        if d <= today:
             soil = max(0.0, min(field_capacity_mm, soil + rain - et0))
         else:
             future.append({"date": d, "rain_mm": rain, "et0_mm": et0})

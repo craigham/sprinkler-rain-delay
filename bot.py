@@ -212,7 +212,7 @@ class SprinklerGroup(app_commands.Group):
 
         lines = [
             f"🌱 **Soil water balance** ({wb['lookback_days']}-day lookback)",
-            f"Current moisture: **{current_soil:.1f} / {cap:.0f} mm** {bar}",
+            f"Est. moisture (end of today): **{current_soil:.1f} / {cap:.0f} mm** {bar}",
             f"Threshold: {threshold:.0f} mm (skip if above) | Field capacity: {cap:.0f} mm",
             "",
             "**📅 Upcoming watering days:**",
