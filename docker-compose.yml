@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  sprinkler-rain-delay:
+    image: craigham/sprinkler-rain-delay:latest
+    environment:
+      - WU_API_KEY_FILE=/run/secrets/wu_api_key
+    secrets:
+      - wu_api_key
+    networks:
+      - services
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: any
+    logging:
+      driver: journald
+
+secrets:
+  wu_api_key:
+    external: true
+
+networks:
+  services:
+    external: true
