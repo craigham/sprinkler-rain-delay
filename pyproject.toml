@@ -7,4 +7,4 @@ build_command = ""
 
 [project]
 name = "sprinkler-rain-delay"
-version = "1.0.0"
+version = "1.1.0"
