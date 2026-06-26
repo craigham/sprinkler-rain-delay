@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Discord bot for sprinkler-rain-delay.
-Slash commands: /status  /delay <days>  /cancel  /forecast
+Command group: /sprinkler status | delay <days> | cancel | forecast
 """
 
 import json
@@ -53,7 +53,6 @@ def clear_state() -> None:
 
 
 def active_manual_delay() -> datetime | None:
-    """Return delay expiry if a manual delay is currently active, else None."""
     state = read_state()
     raw = state.get("delay_until")
     if not raw:
@@ -82,7 +81,6 @@ def sprinkler_set(enable: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def fetch_forecast() -> tuple[float, float]:
-    """Return (max_precip_probability_pct, total_accumulation_inches) for next 24h."""
     r = requests.get(
         "https://api.open-meteo.com/v1/forecast",
         params={
@@ -96,8 +94,7 @@ def fetch_forecast() -> tuple[float, float]:
         timeout=10,
     )
     r.raise_for_status()
-    data = r.json()
-    hourly = data["hourly"]
+    hourly = r.json()["hourly"]
 
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=24)
@@ -127,12 +124,6 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 GUILD = discord.Object(id=GUILD_ID)
-
-
-def wrong_channel(interaction: discord.Interaction) -> bool:
-    return interaction.channel_id != CHANNEL_ID
-
-
 WRONG_CHANNEL_MSG = f"⚠️ Sprinkler commands only work in <#{CHANNEL_ID}>."
 
 
@@ -142,98 +133,101 @@ async def on_ready():
     print(f"Logged in as {client.user} | commands synced to guild {GUILD_ID}")
 
 
-@tree.command(name="status", description="Show sprinkler controller status and any active delay", guild=GUILD)
-async def cmd_status(interaction: discord.Interaction):
-    if wrong_channel(interaction):
-        await interaction.response.send_message(WRONG_CHANNEL_MSG, ephemeral=True)
-        return
-    await interaction.response.defer()
-    try:
-        run = sprinkler_status()
-    except Exception as e:
-        await interaction.followup.send(f"❌ Could not reach sprinklers_pi: {e}")
-        return
+# ---------------------------------------------------------------------------
+# /sprinkler command group
+# ---------------------------------------------------------------------------
 
-    emoji = "💧" if run == "on" else "⛔"
-    lines = [f"{emoji} Schedules are **{run.upper()}**"]
+class SprinklerGroup(app_commands.Group):
+    def __init__(self):
+        super().__init__(name="sprinkler", description="Van sprinkler controls")
 
-    delay_until = active_manual_delay()
-    if delay_until:
-        lines.append(f"⏳ Manual delay active until **{delay_until.strftime('%a %b %-d')}**")
+    async def _check_channel(self, interaction: discord.Interaction) -> bool:
+        if interaction.channel_id != CHANNEL_ID:
+            await interaction.response.send_message(WRONG_CHANNEL_MSG, ephemeral=True)
+            return False
+        return True
 
-    await interaction.followup.send("\n".join(lines))
+    @app_commands.command(name="status", description="Show sprinkler controller status and any active delay")
+    async def status(self, interaction: discord.Interaction):
+        if not await self._check_channel(interaction):
+            return
+        await interaction.response.defer()
+        try:
+            run = sprinkler_status()
+        except Exception as e:
+            await interaction.followup.send(f"❌ Could not reach sprinklers_pi: {e}")
+            return
+
+        emoji = "💧" if run == "on" else "⛔"
+        lines = [f"{emoji} Schedules are **{run.upper()}**"]
+        delay_until = active_manual_delay()
+        if delay_until:
+            lines.append(f"⏳ Manual delay active until **{delay_until.strftime('%a %b %-d')}**")
+        await interaction.followup.send("\n".join(lines))
+
+    @app_commands.command(name="delay", description="Manually skip watering for N days (1–14)")
+    @app_commands.describe(days="Number of days to pause watering")
+    async def delay(self, interaction: discord.Interaction, days: int):
+        if not await self._check_channel(interaction):
+            return
+        if not 1 <= days <= 14:
+            await interaction.response.send_message("❌ Days must be between 1 and 14.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        try:
+            sprinkler_set(enable=False)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Could not reach sprinklers_pi: {e}")
+            return
+
+        until = datetime.now() + timedelta(days=days)
+        write_state({"delay_until": until.isoformat(), "days": days, "source": "discord"})
+        day_word = "day" if days == 1 else "days"
+        await interaction.followup.send(
+            f"⛔ Watering paused for **{days} {day_word}**. "
+            f"Schedules resume **{until.strftime('%a %b %-d')}**."
+        )
+
+    @app_commands.command(name="cancel", description="Cancel any active delay and re-enable watering")
+    async def cancel(self, interaction: discord.Interaction):
+        if not await self._check_channel(interaction):
+            return
+        await interaction.response.defer()
+        try:
+            sprinkler_set(enable=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Could not reach sprinklers_pi: {e}")
+            return
+        clear_state()
+        await interaction.followup.send("💧 Delay cancelled — watering schedules are **ON**.")
+
+    @app_commands.command(name="forecast", description="Show next 24h rain forecast for your location")
+    async def forecast(self, interaction: discord.Interaction):
+        if not await self._check_channel(interaction):
+            return
+        await interaction.response.defer()
+        try:
+            max_prob, total_accum = fetch_forecast()
+        except Exception as e:
+            await interaction.followup.send(f"❌ Could not fetch forecast: {e}")
+            return
+
+        will_skip = max_prob >= PROB_THRESH and total_accum >= ACCUM_THRESH
+        decision = "⛔ would **skip** watering" if will_skip else "💧 would **run** watering"
+        await interaction.followup.send(
+            f"🌦️ **Next 24h forecast** (Open-Meteo)\n"
+            f"• Rain probability: **{max_prob:.0f}%** (threshold: {PROB_THRESH}%)\n"
+            f"• Accumulation: **{total_accum:.2f}\"** (threshold: {ACCUM_THRESH}\")\n"
+            f"• Auto-delay {decision}"
+        )
 
 
-@tree.command(name="delay", description="Manually skip watering for N days (1–14)", guild=GUILD)
-@app_commands.describe(days="Number of days to pause watering")
-async def cmd_delay(interaction: discord.Interaction, days: int):
-    if wrong_channel(interaction):
-        await interaction.response.send_message(WRONG_CHANNEL_MSG, ephemeral=True)
-        return
-    if not 1 <= days <= 14:
-        await interaction.response.send_message("❌ Days must be between 1 and 14.", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-    try:
-        sprinkler_set(enable=False)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Could not reach sprinklers_pi: {e}")
-        return
-
-    until = datetime.now() + timedelta(days=days)
-    write_state({"delay_until": until.isoformat(), "days": days, "source": "discord"})
-
-    day_word = "day" if days == 1 else "days"
-    await interaction.followup.send(
-        f"⛔ Watering paused for **{days} {day_word}**. "
-        f"Schedules resume **{until.strftime('%a %b %-d')}**."
-    )
-
-
-@tree.command(name="cancel", description="Cancel any active delay and re-enable watering", guild=GUILD)
-async def cmd_cancel(interaction: discord.Interaction):
-    if wrong_channel(interaction):
-        await interaction.response.send_message(WRONG_CHANNEL_MSG, ephemeral=True)
-        return
-    await interaction.response.defer()
-    try:
-        sprinkler_set(enable=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Could not reach sprinklers_pi: {e}")
-        return
-
-    clear_state()
-    await interaction.followup.send("💧 Delay cancelled — watering schedules are **ON**.")
-
-
-@tree.command(name="forecast", description="Show next 24h rain forecast for your location", guild=GUILD)
-async def cmd_forecast(interaction: discord.Interaction):
-    if wrong_channel(interaction):
-        await interaction.response.send_message(WRONG_CHANNEL_MSG, ephemeral=True)
-        return
-    await interaction.response.defer()
-    try:
-        max_prob, total_accum = fetch_forecast()
-    except Exception as e:
-        await interaction.followup.send(f"❌ Could not fetch forecast: {e}")
-        return
-
-    will_skip = max_prob >= PROB_THRESH and total_accum >= ACCUM_THRESH
-    decision = "⛔ would **skip** watering" if will_skip else "💧 would **run** watering"
-
-    await interaction.followup.send(
-        f"🌦️ **Next 24h forecast** (Open-Meteo)\n"
-        f"• Rain probability: **{max_prob:.0f}%** (threshold: {PROB_THRESH}%)\n"
-        f"• Accumulation: **{total_accum:.2f}\"** (threshold: {ACCUM_THRESH}\")\n"
-        f"• Auto-delay {decision}"
-    )
+tree.add_command(SprinklerGroup(), guild=GUILD)
 
 
 if __name__ == "__main__":
     token = os.environ.get("DISCORD_BOT_TOKEN")
     if not token:
-        secret = "/run/secrets/bot_token"
-        with open(secret) as f:
+        with open("/run/secrets/bot_token") as f:
             token = f.read().strip()
     client.run(token)
