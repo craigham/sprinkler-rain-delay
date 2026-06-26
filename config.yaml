@@ -1,0 +1,28 @@
+# Weather Underground settings
+wu_api_key: "YOUR_WU_API_KEY"
+wu_station_id: "IVANCO101"
+
+# Thresholds for skipping a watering day
+thresholds:
+  # Skip if forecast rain probability is at or above this percentage
+  rain_probability_pct: 60
+  # AND expected accumulation is at or above this amount (inches)
+  accumulation_inches: 0.25
+  # Lookahead window in hours (how far ahead to check the forecast)
+  lookahead_hours: 24
+
+# Watering schedule — days the sprinkler runs (lowercase, full name)
+watering_days:
+  - tuesday
+  - thursday
+  - sunday
+
+# Hour the sprinkler runs (24h, local time) — used to calculate lookahead window
+watering_hour: 3
+
+# sprinklers_pi web interface
+sprinkler_pi:
+  base_url: "http://192.168.1.120:8080"
+
+# Logging
+log_file: "/var/log/sprinkler-rain-delay.log"
