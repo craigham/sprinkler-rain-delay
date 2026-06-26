@@ -10,6 +10,7 @@ to enable or disable the sprinklers_pi run schedules switch.
 import argparse
 import json
 import logging
+import os
 import sys
 from datetime import date, datetime
 
@@ -17,6 +18,24 @@ import requests
 import yaml
 
 from water_balance import run_balance
+
+DISCORD_API = "https://discord.com/api/v10"
+
+
+def discord_post(channel_id: int, content: str) -> None:
+    token = os.environ.get("DISCORD_BOT_TOKEN", "")
+    if not token:
+        try:
+            with open("/run/secrets/bot_token") as f:
+                token = f.read().strip()
+        except FileNotFoundError:
+            return
+    requests.post(
+        f"{DISCORD_API}/channels/{channel_id}/messages",
+        headers={"Authorization": f"Bot {token}"},
+        json={"content": content},
+        timeout=10,
+    )
 
 STATE_FILE = "/app/delay_state.json"
 
@@ -75,10 +94,15 @@ def main():
         logger.info("Sprinkler run schedules: %s", sprinkler_get_status(base_url))
         return
 
+    verbose = cfg.get("verbose", False)
+    channel_id = cfg["discord"]["channel_id"]
+
     delay_until = active_manual_delay()
     if delay_until:
-        logger.info("Manual delay active until %s — skipping auto-check",
-                    delay_until.strftime("%a %Y-%m-%d"))
+        msg = f"Manual delay active until **{delay_until.strftime('%a %b %-d')}** — skipping auto-check"
+        logger.info(msg)
+        if verbose:
+            discord_post(channel_id, f"⏳ {msg}")
         return
 
     wb = cfg["water_balance"]
@@ -125,6 +149,9 @@ def main():
         if not args.dry_run:
             sprinkler_set_run(base_url, enable=False)
             logger.info("Sprinkler run schedules set to OFF")
+        decision_line = (
+            f"⛔ **SKIP** — soil {today_p.soil_mm:.1f} mm ≥ threshold {wb['watering_threshold_mm']:.0f} mm"
+        )
     else:
         logger.info(
             "DECISION: RUN — soil %.1f mm < threshold %.0f mm",
@@ -133,9 +160,32 @@ def main():
         if not args.dry_run:
             sprinkler_set_run(base_url, enable=True)
             logger.info("Sprinkler run schedules set to ON")
+        decision_line = (
+            f"💧 **RUN** — soil {today_p.soil_mm:.1f} mm < threshold {wb['watering_threshold_mm']:.0f} mm"
+        )
 
     if args.dry_run:
         logger.info("(dry-run: no changes made)")
+
+    if verbose:
+        cap = wb["field_capacity_mm"]
+        proj_lines = []
+        for p in projections:
+            if p.is_watering_day:
+                icon = "⛔" if p.skip else "💧"
+                action = "SKIP" if p.skip else "RUN "
+                proj_lines.append(
+                    f"{icon} **{p.date.strftime('%a %b %-d')}** — {action} "
+                    f"| soil {p.soil_mm:.1f} mm | rain {p.rain_mm:.1f} mm | ET₀ {p.et0_mm:.1f} mm"
+                )
+        msg = "\n".join([
+            f"🌱 **Rain delay check — {today.strftime('%a %b %-d')}**",
+            f"Est. soil moisture: **{current_soil:.1f} / {cap:.0f} mm**",
+            decision_line,
+            "",
+            "**Upcoming watering days:**",
+        ] + (proj_lines or ["_None in forecast window_"]))
+        discord_post(channel_id, msg)
 
 
 if __name__ == "__main__":
