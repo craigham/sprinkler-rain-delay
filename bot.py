@@ -20,6 +20,7 @@ with open(CONFIG_PATH) as f:
     cfg = yaml.safe_load(f)
 
 GUILD_ID = cfg["discord"]["guild_id"]
+CHANNEL_ID = cfg["discord"]["channel_id"]
 BASE_URL = cfg["sprinkler_pi"]["base_url"].rstrip("/")
 LAT = cfg["location"]["lat"]
 LON = cfg["location"]["lon"]
@@ -128,6 +129,13 @@ tree = app_commands.CommandTree(client)
 GUILD = discord.Object(id=GUILD_ID)
 
 
+def wrong_channel(interaction: discord.Interaction) -> bool:
+    return interaction.channel_id != CHANNEL_ID
+
+
+WRONG_CHANNEL_MSG = f"⚠️ Sprinkler commands only work in <#{CHANNEL_ID}>."
+
+
 @client.event
 async def on_ready():
     await tree.sync(guild=GUILD)
@@ -136,6 +144,9 @@ async def on_ready():
 
 @tree.command(name="status", description="Show sprinkler controller status and any active delay", guild=GUILD)
 async def cmd_status(interaction: discord.Interaction):
+    if wrong_channel(interaction):
+        await interaction.response.send_message(WRONG_CHANNEL_MSG, ephemeral=True)
+        return
     await interaction.response.defer()
     try:
         run = sprinkler_status()
@@ -156,6 +167,9 @@ async def cmd_status(interaction: discord.Interaction):
 @tree.command(name="delay", description="Manually skip watering for N days (1–14)", guild=GUILD)
 @app_commands.describe(days="Number of days to pause watering")
 async def cmd_delay(interaction: discord.Interaction, days: int):
+    if wrong_channel(interaction):
+        await interaction.response.send_message(WRONG_CHANNEL_MSG, ephemeral=True)
+        return
     if not 1 <= days <= 14:
         await interaction.response.send_message("❌ Days must be between 1 and 14.", ephemeral=True)
         return
@@ -179,6 +193,9 @@ async def cmd_delay(interaction: discord.Interaction, days: int):
 
 @tree.command(name="cancel", description="Cancel any active delay and re-enable watering", guild=GUILD)
 async def cmd_cancel(interaction: discord.Interaction):
+    if wrong_channel(interaction):
+        await interaction.response.send_message(WRONG_CHANNEL_MSG, ephemeral=True)
+        return
     await interaction.response.defer()
     try:
         sprinkler_set(enable=True)
@@ -192,6 +209,9 @@ async def cmd_cancel(interaction: discord.Interaction):
 
 @tree.command(name="forecast", description="Show next 24h rain forecast for your location", guild=GUILD)
 async def cmd_forecast(interaction: discord.Interaction):
+    if wrong_channel(interaction):
+        await interaction.response.send_message(WRONG_CHANNEL_MSG, ephemeral=True)
+        return
     await interaction.response.defer()
     try:
         max_prob, total_accum = fetch_forecast()

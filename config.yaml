@@ -24,6 +24,7 @@ watering_hour: 3
 # Discord bot
 discord:
   guild_id: 1197616467336777759
+  channel_id: 1520154665738834093
 
 # sprinklers_pi web interface
 sprinkler_pi:
