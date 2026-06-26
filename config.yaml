@@ -3,14 +3,20 @@ location:
   lat: 49.2716
   lon: -123.1839
 
-# Thresholds for skipping a watering day
-thresholds:
-  # Skip if forecast rain probability is at or above this percentage
-  rain_probability_pct: 60
-  # AND expected accumulation is at or above this amount (inches)
-  accumulation_inches: 0.25
-  # Lookahead window in hours from now
-  lookahead_hours: 24
+# ET₀ soil water balance parameters
+# Tune these to match your lawn and sprinkler system.
+water_balance:
+  # Maximum water the soil can hold (mm). Typical lawn: 25–40 mm.
+  field_capacity_mm: 30
+  # Skip watering if estimated soil moisture is above this (mm).
+  # Lower = more conservative (waters more often).
+  watering_threshold_mm: 10
+  # Water added per sprinkler session (mm). Typical residential: 10–15 mm.
+  watering_depth_mm: 12
+  # Days of historical data to reconstruct current soil moisture.
+  lookback_days: 14
+  # Days of forecast to project upcoming watering decisions.
+  forecast_days: 7
 
 # Watering schedule — days the sprinkler runs (lowercase, full name)
 watering_days:

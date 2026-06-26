@@ -6,12 +6,14 @@ Command group: /sprinkler status | delay <days> | cancel | forecast
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import discord
 import requests
 import yaml
 from discord import app_commands
+
+from water_balance import run_balance
 
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/app/config.yaml")
 STATE_FILE = "/app/delay_state.json"
@@ -22,10 +24,6 @@ with open(CONFIG_PATH) as f:
 GUILD_ID = cfg["discord"]["guild_id"]
 CHANNEL_ID = cfg["discord"]["channel_id"]
 BASE_URL = cfg["sprinkler_pi"]["base_url"].rstrip("/")
-LAT = cfg["location"]["lat"]
-LON = cfg["location"]["lon"]
-PROB_THRESH = cfg["thresholds"]["rain_probability_pct"]
-ACCUM_THRESH = cfg["thresholds"]["accumulation_inches"]
 
 
 # ---------------------------------------------------------------------------
@@ -76,44 +74,6 @@ def sprinkler_set(enable: bool) -> None:
     r.raise_for_status()
 
 
-# ---------------------------------------------------------------------------
-# Open-Meteo helpers
-# ---------------------------------------------------------------------------
-
-def fetch_forecast() -> tuple[float, float]:
-    r = requests.get(
-        "https://api.open-meteo.com/v1/forecast",
-        params={
-            "latitude": LAT,
-            "longitude": LON,
-            "hourly": "precipitation_probability,precipitation",
-            "precipitation_unit": "inch",
-            "timezone": "auto",
-            "forecast_days": 3,
-        },
-        timeout=10,
-    )
-    r.raise_for_status()
-    hourly = r.json()["hourly"]
-
-    now = datetime.now(timezone.utc)
-    cutoff = now + timedelta(hours=24)
-    max_prob, total_accum = 0.0, 0.0
-
-    for time_str, prob, accum in zip(
-        hourly["time"],
-        hourly["precipitation_probability"],
-        hourly["precipitation"],
-    ):
-        slot = datetime.fromisoformat(time_str).replace(tzinfo=timezone.utc)
-        if slot < now or slot > cutoff:
-            continue
-        if prob is not None:
-            max_prob = max(max_prob, float(prob))
-        if accum is not None:
-            total_accum += float(accum)
-
-    return max_prob, total_accum
 
 
 # ---------------------------------------------------------------------------
@@ -213,25 +173,47 @@ class SprinklerGroup(app_commands.Group):
             ephemeral=True,
         )
 
-    @app_commands.command(name="forecast", description="Show next 24h rain forecast for your location")
+    @app_commands.command(name="forecast", description="Show ET₀ soil water balance and upcoming watering decisions")
     async def forecast(self, interaction: discord.Interaction):
         if not await self._check_channel(interaction):
             return
         await interaction.response.defer()
         try:
-            max_prob, total_accum = fetch_forecast()
+            current_soil, projections = run_balance(cfg)
         except Exception as e:
             await interaction.followup.send(f"❌ Could not fetch forecast: {e}")
             return
 
-        will_skip = max_prob >= PROB_THRESH and total_accum >= ACCUM_THRESH
-        decision = "⛔ would **skip** watering" if will_skip else "💧 would **run** watering"
-        await interaction.followup.send(
-            f"🌦️ **Next 24h forecast** (Open-Meteo)\n"
-            f"• Rain probability: **{max_prob:.0f}%** (threshold: {PROB_THRESH}%)\n"
-            f"• Accumulation: **{total_accum:.2f}\"** (threshold: {ACCUM_THRESH}\")\n"
-            f"• Auto-delay {decision}"
-        )
+        wb = cfg["water_balance"]
+        cap = wb["field_capacity_mm"]
+        threshold = wb["watering_threshold_mm"]
+
+        bar_filled = int((current_soil / cap) * 10)
+        bar = "🟦" * bar_filled + "⬜" * (10 - bar_filled)
+
+        lines = [
+            f"🌱 **Soil water balance** ({wb['lookback_days']}-day lookback)",
+            f"Current moisture: **{current_soil:.1f} / {cap:.0f} mm** {bar}",
+            f"Threshold: {threshold:.0f} mm (skip if above) | Field capacity: {cap:.0f} mm",
+            "",
+            "**📅 Upcoming watering days:**",
+        ]
+
+        watering_days = [p for p in projections if p.is_watering_day]
+        if not watering_days:
+            lines.append("_No watering days in forecast window_")
+        else:
+            for p in watering_days:
+                icon = "⛔" if p.skip else "💧"
+                action = "SKIP" if p.skip else "RUN"
+                lines.append(
+                    f"{icon} **{p.date.strftime('%a %b %-d')}** — {action} "
+                    f"| soil {p.soil_mm:.1f} mm "
+                    f"| rain {p.rain_mm:.1f} mm "
+                    f"| ET₀ {p.et0_mm:.1f} mm"
+                )
+
+        await interaction.followup.send("\n".join(lines))
 
 
 tree.add_command(SprinklerGroup(), guild=GUILD)

@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY rain_delay.py bot.py config.yaml entrypoint.sh ./
+COPY rain_delay.py bot.py water_balance.py config.yaml entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
 # Log file → container stdout so Docker/journald captures it
