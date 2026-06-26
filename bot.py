@@ -201,6 +201,18 @@ class SprinklerGroup(app_commands.Group):
         clear_state()
         await interaction.followup.send("💧 Delay cancelled — watering schedules are **ON**.")
 
+    @app_commands.command(name="help", description="Show available sprinkler commands")
+    async def help(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "**🌿 Sprinkler Commands**\n"
+            "`/sprinkler status` — show whether schedules are on/off and any active delay\n"
+            "`/sprinkler delay <days>` — pause watering for 1–14 days\n"
+            "`/sprinkler cancel` — cancel an active delay and re-enable watering\n"
+            "`/sprinkler forecast` — show next 24h rain forecast and whether auto-delay would fire\n"
+            "`/sprinkler help` — show this message",
+            ephemeral=True,
+        )
+
     @app_commands.command(name="forecast", description="Show next 24h rain forecast for your location")
     async def forecast(self, interaction: discord.Interaction):
         if not await self._check_channel(interaction):
