@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-rain_delay.py — Check Weather Underground forecast and enable/disable sprinklers_pi scheduling.
+rain_delay.py — Check Open-Meteo forecast and enable/disable sprinklers_pi scheduling.
 
 Designed to run as a cron job the evening before each scheduled watering day.
 Communicates directly with the sprinklers_pi web API to toggle the "Run Schedules" switch.
+No API key required — Open-Meteo is free and open.
 """
 
 import argparse
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 import yaml
@@ -41,56 +42,60 @@ def setup_logging(log_file: str) -> logging.Logger:
 # ---------------------------------------------------------------------------
 
 def sprinkler_get_status(base_url: str) -> str:
-    """Return current run status: 'on' or 'off'."""
     r = requests.get(f"{base_url}/json/state", timeout=10)
     r.raise_for_status()
     return r.json().get("run", "unknown")
 
 
 def sprinkler_set_run(base_url: str, enable: bool) -> None:
-    """Enable or disable the sprinklers_pi run schedules switch."""
     value = "on" if enable else "off"
     r = requests.get(f"{base_url}/bin/run", params={"system": value}, timeout=10)
     r.raise_for_status()
 
 
 # ---------------------------------------------------------------------------
-# Weather Underground
+# Open-Meteo forecast  (free, no API key)
 # ---------------------------------------------------------------------------
 
-def get_wu_forecast(api_key: str, station_id: str) -> dict:
-    """Fetch hourly forecast from Weather Underground for a PWS station's location."""
-    station_url = (
-        f"https://api.weather.com/v2/pws/observations/current"
-        f"?stationId={station_id}&format=json&units=e&apiKey={api_key}"
-    )
-    r = requests.get(station_url, timeout=10)
-    r.raise_for_status()
-    obs = r.json()["observations"][0]
-    lat, lon = obs["lat"], obs["lon"]
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
-    hourly_url = (
-        f"https://api.weather.com/v3/wx/forecast/hourly/10day"
-        f"?geocode={lat},{lon}&format=json&units=e&language=en-US&apiKey={api_key}"
+
+def get_forecast(lat: float, lon: float) -> dict:
+    """Fetch hourly precipitation probability and accumulation from Open-Meteo."""
+    r = requests.get(
+        OPEN_METEO_URL,
+        params={
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": "precipitation_probability,precipitation",
+            "precipitation_unit": "inch",
+            "timezone": "auto",
+            "forecast_days": 3,
+        },
+        timeout=10,
     )
-    r2 = requests.get(hourly_url, timeout=10)
-    r2.raise_for_status()
-    return r2.json()
+    r.raise_for_status()
+    return r.json()
 
 
 def evaluate_forecast(forecast: dict, lookahead_hours: int) -> tuple[float, float]:
     """Return (max_probability_pct, total_accumulation_inches) over the next lookahead_hours."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=lookahead_hours)
 
+    hourly = forecast["hourly"]
     max_prob = 0.0
     total_accum = 0.0
 
-    for i, ts in enumerate(forecast.get("validTimeUtc", [])):
-        if datetime.utcfromtimestamp(ts) > cutoff:
-            break
-        prob = forecast["precipChance"][i] if i < len(forecast.get("precipChance", [])) else 0
-        accum = forecast["qpf"][i] if i < len(forecast.get("qpf", [])) else 0.0
+    for time_str, prob, accum in zip(
+        hourly["time"],
+        hourly["precipitation_probability"],
+        hourly["precipitation"],
+    ):
+        # Open-Meteo times are local (timezone=auto), parse as naive then compare window
+        slot = datetime.fromisoformat(time_str).replace(tzinfo=timezone.utc)
+        if slot < now or slot > cutoff:
+            continue
         if prob is not None:
             max_prob = max(max_prob, float(prob))
         if accum is not None:
@@ -103,7 +108,7 @@ def evaluate_forecast(forecast: dict, lookahead_hours: int) -> tuple[float, floa
 # Schedule helpers
 # ---------------------------------------------------------------------------
 
-def next_watering_day(watering_days: list[str], watering_hour: int) -> datetime | None:
+def next_watering_day(watering_days: list[str], watering_hour: int) -> datetime:
     day_map = {
         "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
         "friday": 4, "saturday": 5, "sunday": 6,
@@ -115,7 +120,8 @@ def next_watering_day(watering_days: list[str], watering_hour: int) -> datetime 
         candidate = now + timedelta(days=offset)
         if candidate.weekday() in target_dow:
             return candidate.replace(hour=watering_hour, minute=0, second=0, microsecond=0)
-    return None
+
+    raise RuntimeError("Could not determine next watering day")
 
 
 # ---------------------------------------------------------------------------
@@ -138,15 +144,19 @@ def main():
         logger.info("Sprinkler run schedules: %s", status)
         return
 
-    next_run = next_watering_day(cfg["watering_days"], cfg["watering_hour"])
-    if next_run is None:
-        logger.error("Could not determine next watering day")
+    try:
+        next_run = next_watering_day(cfg["watering_days"], cfg["watering_hour"])
+    except RuntimeError as e:
+        logger.error("%s", e)
         sys.exit(1)
 
     lookahead = cfg["thresholds"]["lookahead_hours"]
+    lat = cfg["location"]["lat"]
+    lon = cfg["location"]["lon"]
+
     logger.info(
-        "Next watering: %s | Checking %dh forecast for station %s",
-        next_run.strftime("%A %Y-%m-%d %H:%M"), lookahead, cfg["wu_station_id"],
+        "Next watering: %s | Checking %dh Open-Meteo forecast for %.4f, %.4f",
+        next_run.strftime("%A %Y-%m-%d %H:%M"), lookahead, lat, lon,
     )
 
     try:
@@ -157,9 +167,9 @@ def main():
         sys.exit(1)
 
     try:
-        forecast = get_wu_forecast(cfg["wu_api_key"], cfg["wu_station_id"])
+        forecast = get_forecast(lat, lon)
     except requests.RequestException as e:
-        logger.error("Failed to fetch WU forecast: %s", e)
+        logger.error("Failed to fetch Open-Meteo forecast: %s", e)
         sys.exit(1)
 
     max_prob, total_accum = evaluate_forecast(forecast, lookahead)
@@ -167,8 +177,8 @@ def main():
     accum_thresh = cfg["thresholds"]["accumulation_inches"]
 
     logger.info(
-        "Forecast: %.0f%% rain probability, %.2f\" expected accumulation "
-        "(thresholds: %d%% / %.2f\")",
+        'Forecast: %.0f%% rain probability, %.2f" expected accumulation '
+        '(thresholds: %d%% / %.2f")',
         max_prob, total_accum, prob_thresh, accum_thresh,
     )
 
@@ -176,18 +186,15 @@ def main():
 
     if should_skip:
         logger.info(
-            "DECISION: SKIP — disabling sprinkler schedules "
-            "(%.0f%% >= %d%% AND %.2f\" >= %.2f\")",
+            'DECISION: SKIP — disabling sprinkler schedules '
+            '(%.0f%% >= %d%% AND %.2f" >= %.2f")',
             max_prob, prob_thresh, total_accum, accum_thresh,
         )
         if not args.dry_run:
             sprinkler_set_run(base_url, enable=False)
             logger.info("Sprinkler run schedules set to OFF")
     else:
-        logger.info(
-            "DECISION: RUN — enabling sprinkler schedules "
-            "(conditions below threshold)",
-        )
+        logger.info("DECISION: RUN — enabling sprinkler schedules (conditions below threshold)")
         if not args.dry_run:
             sprinkler_set_run(base_url, enable=True)
             logger.info("Sprinkler run schedules set to ON")
