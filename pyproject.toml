@@ -1,0 +1,10 @@
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+commit_message = "chore(release): v{version}"
+tag_format = "v{version}"
+build_command = ""
+
+[project]
+name = "sprinkler-rain-delay"
+version = "1.0.0"
