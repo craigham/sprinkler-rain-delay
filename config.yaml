@@ -21,6 +21,10 @@ watering_days:
 # Hour the sprinkler runs (24h, local time)
 watering_hour: 3
 
+# Discord bot
+discord:
+  guild_id: 1197616467336777759
+
 # sprinklers_pi web interface
 sprinkler_pi:
   base_url: "http://192.168.1.120:8080"

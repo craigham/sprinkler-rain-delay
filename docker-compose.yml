@@ -3,6 +3,8 @@ version: "3.8"
 services:
   sprinkler-rain-delay:
     image: craigham/sprinkler-rain-delay:latest
+    secrets:
+      - bot_token
     networks:
       - services
     deploy:
@@ -14,6 +16,10 @@ services:
         condition: any
     logging:
       driver: journald
+
+secrets:
+  bot_token:
+    external: true
 
 networks:
   services:

@@ -8,12 +8,30 @@ No API key required — Open-Meteo is free and open.
 """
 
 import argparse
+import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 
 import requests
 import yaml
+
+STATE_FILE = "/app/delay_state.json"
+
+
+def active_manual_delay() -> datetime | None:
+    """Return delay expiry if a Discord manual delay is active, else None."""
+    try:
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+        raw = state.get("delay_until")
+        if raw:
+            until = datetime.fromisoformat(raw)
+            return until if until > datetime.now() else None
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return None
 
 
 def load_config(path: str) -> dict:
@@ -158,6 +176,14 @@ def main():
         "Next watering: %s | Checking %dh Open-Meteo forecast for %.4f, %.4f",
         next_run.strftime("%A %Y-%m-%d %H:%M"), lookahead, lat, lon,
     )
+
+    delay_until = active_manual_delay()
+    if delay_until:
+        logger.info(
+            "Manual delay active until %s — skipping auto-check",
+            delay_until.strftime("%a %Y-%m-%d"),
+        )
+        return
 
     try:
         current_status = sprinkler_get_status(base_url)
