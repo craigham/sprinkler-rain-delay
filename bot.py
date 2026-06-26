@@ -8,12 +8,19 @@ import json
 import os
 from datetime import datetime
 
+import logging
+
 import discord
 import requests
 import yaml
 from discord import app_commands
 
 from water_balance import run_balance
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/app/config.yaml")
 STATE_FILE = "/app/delay_state.json"
@@ -87,10 +94,22 @@ GUILD = discord.Object(id=GUILD_ID)
 WRONG_CHANNEL_MSG = f"⚠️ Sprinkler commands only work in <#{CHANNEL_ID}>."
 
 
+log = logging.getLogger("sprinklers-van")
+
+
 @client.event
 async def on_ready():
-    await tree.sync(guild=GUILD)
-    print(f"Logged in as {client.user} | commands synced to guild {GUILD_ID}")
+    log.info("Logged in as %s (guild %s)", client.user, GUILD_ID)
+    try:
+        synced = await tree.sync(guild=GUILD)
+        log.info("Synced %d command(s) to guild", len(synced))
+    except discord.Forbidden:
+        log.warning(
+            "Could not sync commands to guild (403 Missing Access) — "
+            "commands registered via API are still active"
+        )
+    except Exception as e:
+        log.error("Command sync failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
